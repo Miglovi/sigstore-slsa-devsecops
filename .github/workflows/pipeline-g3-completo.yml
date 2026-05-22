@@ -80,14 +80,19 @@ jobs:
       - uses: sigstore/cosign-installer@v3
         with:
           cosign-release: 'v2.2.4'
-      - name: "Instalar Trivy"
+      - name: "Instalar Trivy via apt"
         run: |
-          wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.50.4/trivy_0.50.4_Linux-64bit.tar.gz | tar xz
-          sudo mv trivy /usr/local/bin/
+          sudo apt-get install wget apt-transport-https gnupg -y
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq
+          sudo apt-get install trivy -y
+          trivy --version
       - name: "Generar SBOM"
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}"
           trivy image --format spdx-json --output sbom.spdx.json "${IMAGE}"
+          echo "SBOM generado"
       - name: "Adjuntar SBOM firmado"
         env:
           COSIGN_EXPERIMENTAL: "1"
