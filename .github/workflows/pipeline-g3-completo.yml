@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: miglovi/sigstore-slsa-devsecops
 
 permissions:
   contents: read
@@ -16,93 +16,138 @@ permissions:
   attestations: write
 
 jobs:
+
   build-and-push:
     name: "Job 1 - Build & Push Docker"
     runs-on: ubuntu-latest
+
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tag: ${{ steps.meta.outputs.tags }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
+
+      - name: Docker Metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: type=raw,value=latest
-      - uses: docker/setup-buildx-action@v3
-      - id: build
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
-            GITHUB_SHA=${{ github.sha }}
 
   sign-image:
     name: "Job 2 - Firma Keyless Cosign"
     runs-on: ubuntu-latest
+
     needs: build-and-push
+
     steps:
-      - uses: docker/login-action@v3
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
+
+      - name: Instalar Cosign
+        uses: sigstore/cosign-installer@v3
         with:
           cosign-release: 'v2.2.4'
-      - env:
+
+      - name: Firmar Imagen
+        env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
           echo "Firmando imagen: ${IMAGE}"
+
           cosign sign --yes "${IMAGE}"
+
           echo "Firma registrada en Rekor"
 
   sbom-and-sign:
     name: "Job 3 - SBOM Trivy + Firma"
     runs-on: ubuntu-latest
+
     needs: build-and-push
+
     steps:
-      - uses: docker/login-action@v3
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
+
+      - name: Instalar Cosign
+        uses: sigstore/cosign-installer@v3
         with:
           cosign-release: 'v2.2.4'
-      - name: "Instalar Trivy"
+
+      - name: Instalar Trivy
         run: |
-          sudo apt-get install wget apt-transport-https gnupg -y
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get install wget apt-transport-https gnupg jq -y
+
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | gpg --dearmor \
+          | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+          | sudo tee /etc/apt/sources.list.d/trivy.list
+
           sudo apt-get update -qq
           sudo apt-get install trivy -y
-      - name: "Pull y generar SBOM"
+
+      - name: Pull y generar SBOM
         run: |
-          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
+          docker pull "${IMAGE}"
+
           trivy image \
             --format spdx-json \
             --output sbom.spdx.json \
-            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+            "${IMAGE}"
+
           echo "SBOM generado"
-      - name: "Adjuntar SBOM firmado"
+
+      - name: Adjuntar SBOM firmado
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE}"
+
+          cosign attest \
+            --yes \
+            --type spdxjson \
+            --predicate sbom.spdx.json \
+            "${IMAGE}"
+
           echo "SBOM adjuntado y firmado"
-      - uses: actions/upload-artifact@v4
+
+      - name: Guardar Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: sbom-spdx-json
           path: sbom.spdx.json
@@ -110,62 +155,109 @@ jobs:
   slsa-provenance:
     name: "Job 4 - Provenance SLSA Level 2"
     runs-on: ubuntu-latest
+
     needs: build-and-push
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
+
+      - name: Instalar Cosign
+        uses: sigstore/cosign-installer@v3
         with:
           cosign-release: 'v2.2.4'
-      - env:
+
+      - name: Generar SLSA Provenance
+        env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
           cat > slsa-provenance.json << EOF
           {
             "_type": "https://in-toto.io/Statement/v0.1",
             "predicateType": "https://slsa.dev/provenance/v0.2",
-            "subject": [{"name": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}", "digest": {"sha256": "latest"}}],
+            "subject": [
+              {
+                "name": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",
+                "digest": {
+                  "sha256": "${{ needs.build-and-push.outputs.image-digest }}"
+                }
+              }
+            ],
             "predicate": {
-              "builder": {"id": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"},
+              "builder": {
+                "id": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              },
               "buildType": "https://github.com/Attestations/GitHubActionsWorkflow@v1",
               "invocation": {
                 "configSource": {
                   "uri": "git+https://github.com/${{ github.repository }}@refs/heads/main",
-                  "digest": {"sha1": "${{ github.sha }}"},
+                  "digest": {
+                    "sha1": "${{ github.sha }}"
+                  },
                   "entryPoint": ".github/workflows/pipeline-g3-completo.yml"
                 }
               },
-              "metadata": {"buildStartedOn": "${{ github.event.head_commit.timestamp }}"}
+              "metadata": {
+                "buildStartedOn": "${{ github.event.head_commit.timestamp }}"
+              }
             }
           }
           EOF
-          cosign attest --yes --type slsaprovenance --predicate slsa-provenance.json "${IMAGE}"
+
+          cosign attest \
+            --yes \
+            --type slsaprovenance \
+            --predicate slsa-provenance.json \
+            "${IMAGE}"
+
           echo "SLSA Level 2 generado"
 
   verify:
     name: "Job 5 - Verificacion Final"
     runs-on: ubuntu-latest
-    needs: [sign-image, sbom-and-sign, slsa-provenance]
+
+    needs:
+      - sign-image
+      - sbom-and-sign
+      - slsa-provenance
+
     steps:
-      - uses: docker/login-action@v3
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
+
+      - name: Instalar Cosign
+        uses: sigstore/cosign-installer@v3
         with:
           cosign-release: 'v2.2.4'
-      - env:
+
+      - name: Instalar jq
+        run: sudo apt-get install jq -y
+
+      - name: Verificar Firma
+        env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
           cosign verify \
             --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/.*" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-            "${IMAGE}" | jq '.[0] | {Issuer: .optional.Issuer, Subject: .optional.Subject}'
-          echo "SLSA Level 2 verificado correctamente"
+            "${IMAGE}" \
+            | jq '.[0] | {Issuer: .optional.Issuer, Subject: .optional.Subject}'
+
+          echo "Verificacion completada correctamente"
+
+          echo "Pipeline DevSecOps funcionando"
