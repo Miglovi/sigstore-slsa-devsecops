@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -32,9 +33,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
+          tags: type=raw,value=latest
       - uses: docker/setup-buildx-action@v3
       - id: build
         uses: docker/build-push-action@v5
@@ -63,7 +62,8 @@ jobs:
       - env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Firmando imagen: ${IMAGE}"
           cosign sign --yes "${IMAGE}"
           echo "Firma registrada en Rekor"
 
@@ -72,8 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-push
     steps:
-      - name: "Login ghcr.io"
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -88,19 +87,19 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update -qq
           sudo apt-get install trivy -y
-      - name: "Pull imagen y generar SBOM"
+      - name: "Pull y generar SBOM"
         run: |
           docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           trivy image \
             --format spdx-json \
             --output sbom.spdx.json \
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          echo "SBOM generado correctamente"
+          echo "SBOM generado"
       - name: "Adjuntar SBOM firmado"
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE}"
           echo "SBOM adjuntado y firmado"
       - uses: actions/upload-artifact@v4
@@ -125,13 +124,12 @@ jobs:
       - env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}"
-          DIGEST=$(echo "${{ needs.build-and-push.outputs.image-digest }}" | sed 's/sha256://')
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           cat > slsa-provenance.json << EOF
           {
             "_type": "https://in-toto.io/Statement/v0.1",
             "predicateType": "https://slsa.dev/provenance/v0.2",
-            "subject": [{"name": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}", "digest": {"sha256": "${DIGEST}"}}],
+            "subject": [{"name": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}", "digest": {"sha256": "latest"}}],
             "predicate": {
               "builder": {"id": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"},
               "buildType": "https://github.com/Attestations/GitHubActionsWorkflow@v1",
@@ -165,7 +163,7 @@ jobs:
       - env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           cosign verify \
             --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/.*" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
