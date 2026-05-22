@@ -1,0 +1,2 @@
+timestamp,grupo,vector_ataque,resultado_firma,resultado_sbom,resultado_slsa,resultado_global,tiempo_total_s
+2026-05-01T14:00:00Z,CONTROL,digest_alterado,NO_DETECTADO,NO_DETECTADO,NO_DETECTADO,NO_DETECTADO,0
